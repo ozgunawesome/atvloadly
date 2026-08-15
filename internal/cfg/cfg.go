@@ -3,7 +3,10 @@ package cfg
 import (
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 
 	"github.com/bitxeno/atvloadly/internal/utils"
 	"github.com/creasty/defaults"
@@ -13,6 +16,18 @@ import (
 	"github.com/knadh/koanf/parsers/yaml"
 	"github.com/knadh/koanf/providers/file"
 )
+
+var rootPathPattern = regexp.MustCompile(`^[A-Za-z0-9.-]+$`)
+
+func RootPath() string {
+	if value, ok := os.LookupEnv("ATVLOADLY_ROOT_PATH"); ok {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" && rootPathPattern.MatchString(trimmed) {
+			return trimmed
+		}
+	}
+	return "atvloadly"
+}
 
 type configuration struct {
 	ko   *koanf.Koanf
