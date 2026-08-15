@@ -1,3 +1,39 @@
+# Stage 1: Build the Go binary and frontend
+FROM golang:1.25-alpine AS builder
+
+ARG APP_NAME
+ARG VERSION
+ARG BUILDDATE
+ARG COMMIT
+ARG TARGETPLATFORM
+ARG TARGETOS
+ARG TARGETARCH
+
+RUN echo "Building for $TARGETPLATFORM"
+
+# Install build dependencies including gcc for CGO
+RUN apk add --no-cache nodejs npm gcc musl-dev
+
+WORKDIR /build
+
+# Copy source
+COPY go.mod go.sum ./
+COPY main.go .
+COPY cmd ./cmd
+COPY internal ./internal
+COPY web ./web
+COPY locales ./locales
+
+# Build frontend
+WORKDIR /build/web/static
+RUN npm ci
+RUN npm run build
+
+# Build Go binary
+WORKDIR /build
+RUN CGO_ENABLED=1 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /tmp/${APP_NAME} .
+
+# Stage 2: Runtime image
 FROM ubuntu:22.04
 ARG APP_NAME
 ARG VERSION
@@ -66,48 +102,19 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get -y install tzdata
 RUN apt-get clean
 RUN cd /tmp && rm -rf ./*.deb && rm -rf ./*.tar.gz && rm -rf ./*.zip && rm -rf ./*.apk
 
-# The add command will automatically decompress the file.
+# Copy built binary and config from builder
 RUN mkdir -p /keep
 COPY ./doc/config.yaml.example /keep/config.yaml
-COPY ./build/${APP_NAME}-${TARGETOS}-${TARGETARCH} /usr/bin/${APP_NAME}
+COPY --from=builder /tmp/${APP_NAME} /usr/bin/${APP_NAME}
 RUN chmod +x /usr/bin/${APP_NAME}
 
 # The lockdown records have been moved to /data.
 RUN rm -rf /var/lib/lockdown && mkdir -p /data/lockdown && ln -s /data/lockdown /var/lib/lockdown
 
-
-
 # Generate startup script
 COPY ./doc/scripts/usbmuxd /etc/init.d/usbmuxd
 RUN chmod +x /etc/init.d/usbmuxd
-RUN printf '#!/bin/sh \n\n\
-
-mkdir -p /data/lockdown \n\
-mkdir -p /data/PlumeImpactor \n\
-mkdir -p /data/PlumeImpactor/pairing_files \n\
-mkdir -p $HOME/.config \n\
-[ ! -e "$HOME/.config/PlumeImpactor" ] && ln -s /data/PlumeImpactor $HOME/.config/PlumeImpactor \n\
-
-if [ -d "/keep/lib" ]; then  \n\
-    rm -rf /data/PlumeImpactor/lib \n\
-    cp -rf /keep/lib /data/PlumeImpactor/lib \n\
-    rm -rf /keep/lib \n\
-fi  \n\
-
-if [ -d "/keep/DeveloperDiskImages" ]; then  \n\
-    rm -rf /data/DeveloperDiskImages \n\
-    cp -rf /keep/DeveloperDiskImages /data/DeveloperDiskImages \n\
-fi  \n\
-
-if [ ! -f "/data/config.yaml" ]; then  \n\
-    cp /keep/config.yaml /data/config.yaml \n\
-fi  \n\
-
-/etc/init.d/usbmuxd start \n\
-
-/usr/bin/%s server -p ${SERVICE_PORT:-80} -c /data/config.yaml  \n\
-\n\
-' ${APP_NAME} >> /entrypoint.sh
+RUN printf '#!/bin/sh\n\nmkdir -p /data/lockdown\nmkdir -p /data/PlumeImpactor\nmkdir -p /data/PlumeImpactor/pairing_files\nmkdir -p $HOME/.config\n[ ! -e "$HOME/.config/PlumeImpactor" ] && ln -s /data/PlumeImpactor $HOME/.config/PlumeImpactor\n\nif [ -d "/keep/lib" ]; then  \n    rm -rf /data/PlumeImpactor/lib\n    cp -rf /keep/lib /data/PlumeImpactor/lib\n    rm -rf /keep/lib\nfi  \n\nif [ -d "/keep/DeveloperDiskImages" ]; then  \n    rm -rf /data/DeveloperDiskImages\n    cp -rf /keep/DeveloperDiskImages /data/DeveloperDiskImages\nfi  \n\nif [ ! -f "/data/config.yaml" ]; then  \n    cp /keep/config.yaml /data/config.yaml\nfi  \n\n/etc/init.d/usbmuxd start\n\n/usr/bin/%s server -p ${SERVICE_PORT:-80} -c /data/config.yaml\n\n' ${APP_NAME} >> /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
